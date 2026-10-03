@@ -1,24 +1,29 @@
-# backend.py
+from pathlib import Path
+from typing import Annotated, TypedDict
+import os
+import sqlite3
 
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+from langchain_core.messages import BaseMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.tools import tool
-from dotenv import load_dotenv
-import sqlite3
 import requests
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name(".env"))
 
 # -------------------
 # 1. LLM
 # -------------------
-llm = ChatOpenAI()
+google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+llm = ChatGoogleGenerativeAI(
+    model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+    google_api_key=google_api_key,
+)
 
 # -------------------
 # 2. Tools
