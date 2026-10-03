@@ -1,10 +1,11 @@
 from pathlib import Path
 from typing import Annotated, TypedDict
+import json
 import os
 import sqlite3
-
+import uuid
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -118,3 +119,82 @@ def retrieve_all_threads():
     for checkpoint in checkpointer.list(None):
         all_threads.add(checkpoint.config["configurable"]["thread_id"])
     return list(all_threads)
+
+
+# -------------------
+# 8. Uvicorn ASGI app
+# -------------------
+async def _read_json_body(receive):
+    body = b""
+    while True:
+        message = await receive()
+        body += message.get("body", b"")
+        if not message.get("more_body"):
+            break
+
+    if not body:
+        return {}
+    return json.loads(body.decode("utf-8"))
+
+
+async def _send_json(send, status_code, data):
+    content = json.dumps(data).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status_code,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(content)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": content})
+
+
+async def app(scope, receive, send):
+    if scope["type"] != "http":
+        await _send_json(send, 400, {"error": "Only HTTP requests are supported"})
+        return
+
+    method = scope["method"]
+    path = scope["path"]
+
+    if method == "GET" and path == "/":
+        await _send_json(send, 200, {"service": "langgraph-chatbot", "status": "ok"})
+        return
+
+    if method == "GET" and path == "/health":
+        await _send_json(send, 200, {"status": "ok"})
+        return
+
+    if method == "GET" and path == "/threads":
+        await _send_json(send, 200, {"threads": retrieve_all_threads()})
+        return
+
+    if method == "POST" and path == "/chat":
+        try:
+            payload = await _read_json_body(receive)
+            user_message = payload.get("message")
+            if not user_message:
+                await _send_json(send, 400, {"error": "Field 'message' is required"})
+                return
+
+            thread_id = payload.get("thread_id") or str(uuid.uuid4())
+            result = chatbot.invoke(
+                {"messages": [HumanMessage(content=user_message)]},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            await _send_json(
+                send,
+                200,
+                {
+                    "thread_id": thread_id,
+                    "response": result["messages"][-1].content,
+                },
+            )
+        except Exception as exc:
+            await _send_json(send, 500, {"error": str(exc)})
+        return
+
+    await _send_json(send, 404, {"error": "Not found"})
